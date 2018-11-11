@@ -527,14 +527,11 @@ class BilliardGame(arcade.Window):
 
         # Enforce correct ball positions
         offset = self.pocket_radius + 2 * self.ball_radius
-        i = 1
         for ball_id, ball in enumerate(self.balls):
 
             while True:
                 # Proposal
-                np.random.seed(i)
                 proposal_x = np.random.uniform(offset, self.width - offset)
-                np.random.seed(i + 1)
                 proposal_y = np.random.uniform(offset, self.height - offset)
 
                 # Set position
@@ -549,8 +546,6 @@ class BilliardGame(arcade.Window):
                 # Proceed with next ball if no collision has been detected
                 if not is_collision:
                     break
-
-                i += 2
 
     def on_draw(self):
         self.clear()
@@ -606,9 +601,9 @@ class BilliardGame(arcade.Window):
         balls_on_table_before = {ball for ball in self.balls[1:] if ball.is_on_table}
 
         # Update until movement stops or cue balls is pocketed
-        dt = 1/self.fps
+        delta_time = 1/self.fps
         while True:
-            self.update(dt)
+            self.update(delta_time)
 
             # Cue ball
             if not self.balls[0].is_on_table:
@@ -641,7 +636,10 @@ class BilliardGame(arcade.Window):
                     new_observation=self.take_screenshot(),
                     done=False)
 
-    def update(self, dt):
+    def update(self, delta_time):
+
+        # Ensure reproducibility (at the expense of more flickering)
+        actual_delta_time = 1/self.fps
 
         # Game logic
         for ball in self.balls:
@@ -678,7 +676,7 @@ class BilliardGame(arcade.Window):
                     break
         for ball in self.balls:
             # Update ball position
-            ball.update(dt)
+            ball.update(actual_delta_time)
 
 
 def main():
@@ -713,7 +711,7 @@ def main():
     parser.add_argument("--fps",
                         help="How many frames should be rendered per second",
                         type=float,
-                        default=200)
+                        default=60)
 
     parser.add_argument("--interactive", "-i",
                         help="Whether to perform a test run",
