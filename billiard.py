@@ -1,14 +1,28 @@
 import arcade
+from arcade.window_commands import set_viewport
+from arcade.window_commands import set_window
+import pyglet
 from argparse import ArgumentParser
 import numpy as np
 from abc import ABC, abstractmethod
 from collections import namedtuple
+import matplotlib.pyplot as plt
+from skimage import io
 
 Step = namedtuple("Step", ["reward", "new_observation", "done"])
 
 # Environment constants
 MU = 2.
 G = 9.81
+MIN_VELOCITY = 10
+
+# Colors
+AIR_FORCE_BLUE = (93, 138, 168)
+BRITISH_RACING_GREEN = (0, 66, 37)
+BRONZE = (205, 127, 50)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+WHITE_SMOKE = (245, 245, 245)
 
 
 class CushionElement(ABC):
@@ -25,7 +39,7 @@ class CushionElement(ABC):
 
 
 class LinearCushionElement(CushionElement):
-    def __init__(self, xa, ya, xb, yb, pocket_radius, color):
+    def __init__(self, xa, ya, xb, yb, pocket_radius, color, screen_width, screen_height):
         super().__init__(color=color)
 
         # Two points on line
@@ -44,8 +58,6 @@ class LinearCushionElement(CushionElement):
         self.p = p / self.p_norm
 
         # Filled rectangle
-        screen_width = arcade.get_window().height
-        screen_height = arcade.get_window().width
         eps = 1
         if self.orientation == "v":
             self.xf = self.xa - (pocket_radius if self.xa < screen_width/2 else -pocket_radius)/2.
@@ -58,12 +70,12 @@ class LinearCushionElement(CushionElement):
             self.wf = np.abs(xb - xa) + eps
             self.hf = pocket_radius
 
-    def draw(self):
+    def on_draw(self):
+        pass
         # Functional cushion
         arcade.draw_line(start_x=self.xa, start_y=self.ya,
                          end_x=self.xb, end_y=self.yb,
                          color=self.color)
-
         # Draw a filled rectangle
         arcade.draw_rectangle_filled(center_x=self.xf, center_y=self.yf, width=self.wf, height=self.hf, color=self.color)
 
@@ -108,7 +120,7 @@ class CircularCushionElement(CushionElement):
         self.phi_end = phi_end
         self.color = color
 
-    def draw(self):
+    def on_draw(self):
         arcade.draw_arc_filled(center_x=self.xc, center_y=self.yc,
                                width=self.r, height=self.r,
                                start_angle=self.phi_start, end_angle=self.phi_end,
@@ -151,11 +163,12 @@ class TriangularPocket(Pocket):
         self.xb, self.yb = xb, yb
         self.xc, self.yc = xc, yc
 
-    def draw(self):
-        arcade.draw_triangle_filled(x1=self.xa, y1=self.ya,
-                                    x2=self.xb, y2=self.yb,
-                                    x3=self.xc, y3=self.yc,
-                                    color=self.color)
+    def on_draw(self):
+        pass
+        # arcade.draw_triangle_filled(x1=self.xa, y1=self.ya,
+        #                             x2=self.xb, y2=self.yb,
+        #                             x3=self.xc, y3=self.yc,
+        #                             color=self.color)
 
     def __contains__(self, ball):
         x1, y1 = self.xa, self.ya
@@ -164,8 +177,9 @@ class TriangularPocket(Pocket):
         x, y = ball.center_x, ball.center_y
 
         # Barycentric coordinates
-        u = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3))/((y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3))
-        v = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3))/((y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3))
+        denominator = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
+        u = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3))/denominator
+        v = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3))/denominator
         w = 1 - u - v
 
         return 0 <= u <= 1 and 0 <= v <= 1 and 0 <= w <= 1
@@ -179,7 +193,7 @@ class RectangularPocket(Pocket):
         self.width = width
         self.height = height
 
-    def draw(self):
+    def on_draw(self):
         arcade.draw_rectangle_filled(center_x=self.xa, center_y=self.ya,
                                      width=self.width, height=self.height,
                                      color=self.color)
@@ -191,7 +205,7 @@ class RectangularPocket(Pocket):
 
 
 class PoolTable:
-    def __init__(self, pocket_width, pocket_radius):
+    def __init__(self, screen_width, screen_height, pocket_width, pocket_radius):
 
         self.pocket_width = pocket_width
         self.pocket_radius = pocket_radius
@@ -199,35 +213,41 @@ class PoolTable:
         """
         TABLE GEOMETRY
         """
-        screen_width = arcade.get_window().width
-        screen_height = arcade.get_window().height
-        color = arcade.color.BRITISH_RACING_GREEN
-        pocket_color = arcade.color.BRONZE
+        screen_width = screen_width
+        screen_height = screen_height
+        color = BRITISH_RACING_GREEN
+        pocket_color = BRONZE
+        kwargs = {
+            "pocket_radius": pocket_radius,
+            "color": color,
+            "screen_width": screen_width,
+            "screen_height": screen_height
+        }
 
         # Horizontal cushions
         lh = screen_width - 2 * pocket_radius
         self.cushion_bottom = LinearCushionElement(xa=2 * pocket_radius, ya=pocket_radius,
                                                    xb=lh, yb=pocket_radius,
-                                                   pocket_radius=pocket_radius, color=color)
+                                                   **kwargs)
         self.cushion_top = LinearCushionElement(xa=2 * pocket_radius, ya=screen_height - pocket_radius,
                                                 xb=lh, yb=screen_height - pocket_radius,
-                                                pocket_radius=pocket_radius, color=color)
+                                                **kwargs)
 
         # Vertical cushions
         lv = (screen_height - 6 * pocket_radius - pocket_width)/2.
         self.cushion_bottom_left = LinearCushionElement(xa=pocket_radius, ya=2 * pocket_radius,
                                                         xb=pocket_radius, yb=2 * pocket_radius + lv,
-                                                        pocket_radius=pocket_radius, color=color)
+                                                        **kwargs)
         self.cushion_bottom_right = LinearCushionElement(xa=pocket_radius + lh, ya=2 * pocket_radius,
                                                          xb=pocket_radius + lh, yb=2 * pocket_radius + lv,
-                                                         pocket_radius=pocket_radius, color=color)
+                                                         **kwargs)
 
         self.cushion_top_left = LinearCushionElement(xa=pocket_radius, ya=4 * pocket_radius + lv + pocket_width,
                                                      xb=pocket_radius, yb=screen_height - 2 * pocket_radius,
-                                                     pocket_radius=pocket_radius, color=color)
+                                                     **kwargs)
         self.cushion_top_right = LinearCushionElement(xa=pocket_radius + lh, ya=4 * pocket_radius + lv + pocket_width,
                                                       xb=pocket_radius + lh, yb=screen_height - 2 * pocket_radius,
-                                                      pocket_radius=pocket_radius, color=color)
+                                                      **kwargs)
 
         # Round cushions
         self.corner_bottom_west = CircularCushionElement(xc=2 * pocket_radius, yc=0,
@@ -326,15 +346,14 @@ class PoolTable:
                         self.pocket_north_west, self.pocket_north_east,
                         self.pocket_west, self.pocket_east]
 
-    def draw(self):
+    def on_draw(self):
         for pocket in self.pockets:
-            pocket.draw()
+            pocket.on_draw()
 
         for cushion in self.cushions:
-            cushion.draw()
+            cushion.on_draw()
 
     def is_in_pocket(self, ball):
-        # TODO: Reward
         return any((ball in pocket) for pocket in self.pockets)
 
     def get_colliding_cushion(self, ball):
@@ -352,7 +371,7 @@ class BilliardBall:
         # Fixed
         self.radius = radius
         self.color = color
-        self.reward = 2
+        self.reward = reward
 
         # Dynamic
         self.is_on_table = True
@@ -381,13 +400,13 @@ class BilliardBall:
         self._next_velocity_y = value
 
     def is_moving(self):
-        return not np.isclose(np.linalg.norm([self.velocity_x, self.velocity_y], ord=2), 0.)
+        return np.linalg.norm([self.velocity_x, self.velocity_y], ord=2) > MIN_VELOCITY
 
     def exert_force(self, vx, vy):
         self._velocity_x = self._next_velocity_x = vx
         self._velocity_y = self._next_velocity_y = vy
 
-    def draw(self):
+    def on_draw(self):
         if self.is_on_table:
             arcade.draw_circle_filled(center_x=self.center_x, center_y=self.center_y,
                                       radius=self.radius, color=self.color)
@@ -396,9 +415,12 @@ class BilliardBall:
 
         # Friction
         magnitude = np.linalg.norm([self._next_velocity_x, self._next_velocity_y], ord=2)
-        if not np.isclose(magnitude, 0):
+        if magnitude > MIN_VELOCITY:
             self._next_velocity_x -= MU * G * dt * self._next_velocity_x/magnitude
             self._next_velocity_y -= MU * G * dt * self._next_velocity_y/magnitude
+        else:
+            self._next_velocity_x = 0
+            self._next_velocity_y = 0
 
         # Write back
         self._velocity_x = self._next_velocity_x
@@ -448,26 +470,37 @@ class BilliardBall:
 
 
 class BilliardGame(arcade.Window):
-    def __init__(self, screen_width, screen_height,
+    def __init__(self, screen_width, screen_height, fps,
                  pocket_width,
                  num_balls, ball_radius,
                  standardize_rewards=True):
-        super().__init__(screen_width, screen_height, "Billiard Simulation")
+
+        # Unfortunately, arcade.Window does not expose the "visible" parameter in its constructor
+        # Let us bypass this by calling pyglet.window.Window's constructor directly
+        config = pyglet.gl.Config(major_version=3, minor_version=3, double_buffer=True)
+        pyglet.window.Window.__init__(self, width=screen_width, height=screen_height, caption="Billard AI",
+                                      resizable=False, config=config, visible=False)
+        self.set_update_rate(1/fps)
+        super().set_fullscreen(False)
+        self.invalid = False
+        set_window(self)
+        set_viewport(0, self.width, 0, self.height)
 
         # Copy
         self.pocket_width = pocket_width
         self.pocket_radius = pocket_width / (2 * (np.sqrt(2) - 1))
+        self.fps = fps
 
         # Game-specific
         self.num_balls = num_balls
         self.ball_radius = ball_radius
 
         # Scene construction
-        self.balls = [BilliardBall(radius=ball_radius, color=arcade.color.WHITE_SMOKE, reward=None)]
+        self.balls = [BilliardBall(radius=ball_radius, color=WHITE_SMOKE, reward=None)]
 
         # Linearly interpolate colors
-        start_color = np.array(arcade.color.RED)
-        end_color = np.array(arcade.color.GREEN)
+        start_color = np.array(RED)
+        end_color = np.array(GREEN)
         x = np.linspace(start=0., stop=1., num=num_balls - 1)
         color = np.matmul(np.column_stack((1 - x, x)), np.row_stack((start_color, end_color)))
 
@@ -479,20 +512,29 @@ class BilliardGame(arcade.Window):
         for k in range(num_balls - 1):
             self.balls.append(BilliardBall(radius=ball_radius, color=color[k].astype(np.int32), reward=self.rewards[k]))
 
-        self.table = PoolTable(pocket_width=pocket_width, pocket_radius=self.pocket_radius)
+        self.table = PoolTable(screen_width=screen_width, screen_height=screen_height,
+                               pocket_width=pocket_width, pocket_radius=self.pocket_radius)
 
         # Assign ball positions
         self.assign_initial_ball_positions()
+
+        # Keep track of steps
+        self.step_counter = 0
+        self.max_steps = (self.num_balls - 1) // 2
+        self.done = False
 
     def assign_initial_ball_positions(self):
 
         # Enforce correct ball positions
         offset = self.pocket_radius + 2 * self.ball_radius
+        i = 1
         for ball_id, ball in enumerate(self.balls):
 
             while True:
                 # Proposal
+                np.random.seed(i)
                 proposal_x = np.random.uniform(offset, self.width - offset)
+                np.random.seed(i + 1)
                 proposal_y = np.random.uniform(offset, self.height - offset)
 
                 # Set position
@@ -508,19 +550,28 @@ class BilliardGame(arcade.Window):
                 if not is_collision:
                     break
 
+                i += 2
+
     def on_draw(self):
-        arcade.start_render()
+        self.clear()
 
         # Ball
         for ball in self.balls:
-            ball.draw()
+            ball.on_draw()
 
         # Table
-        self.table.draw()
+        self.table.on_draw()
 
-    # TODO:
     def take_screenshot(self):
-        pass
+        # We have to execute the render loop a couple of times to guarantee consistency
+        img = None
+        while img is None or np.max(img) < 1:
+            self.switch_to()
+            self.dispatch_events()
+            self.dispatch_event('on_draw')
+            self.flip()
+            img = np.array(arcade.draw_commands.get_image())[:, :, :3]    # [H, W, 3]
+        return img
 
     def reset(self):
 
@@ -531,9 +582,15 @@ class BilliardGame(arcade.Window):
         # Assign new positions
         self.assign_initial_ball_positions()
 
+        # Reset step counter
+        self.step_counter = 0
+        self.done = False
+
         return Step(reward=0, new_observation=self.take_screenshot(), done=False)
 
-    def step(self, phi_deg, velocity_magnitude, fps):
+    def step(self, phi_deg, velocity_magnitude):
+
+        assert (self.step_counter < self.max_steps) and not self.done, "Episode is already over! Reset is necessary."
 
         # Radians
         phi_grad = np.pi/180. * phi_deg
@@ -546,33 +603,46 @@ class BilliardGame(arcade.Window):
         self.balls[0].exert_force(vx=velocity_x, vy=velocity_y)
 
         # Count number of balls on the table before performing the shot
-        num_balls_on_table_before = sum(ball.is_on_table for ball in self.balls[1:])
+        balls_on_table_before = {ball for ball in self.balls[1:] if ball.is_on_table}
 
         # Update until movement stops or cue balls is pocketed
-        dt = 1/fps
-        reward = 0.
+        dt = 1/self.fps
         while True:
             self.update(dt)
 
             # Cue ball
             if not self.balls[0].is_on_table:
-                return Step(reward=reward, new_observation=self.take_screenshot(), done=True)
+                self.done = True
+                return Step(reward=0, new_observation=None, done=True)
 
             # No balls are moving
             if all(not ball.is_moving() for ball in self.balls):
                 break
 
         # Count number of balls on the table after performing the shot
-        num_balls_on_table_after = sum(ball.is_on_table for ball in self.balls[1:])
+        balls_on_table_after = {ball for ball in self.balls[1:] if ball.is_on_table}
 
-        if num_balls_on_table_before == num_balls_on_table_after:
-            # Episode ends after first unsuccessful shot
-            return Step(reward=reward, new_observation=self.take_screenshot(), done=True)
+        # Balls that were pocketed
+        ball_pocketed = balls_on_table_before - balls_on_table_after
+
+        # Compute reward
+        reward = sum(ball.reward for ball in ball_pocketed)
+
+        # Manage step counter
+        self.step_counter += 1
+        if self.step_counter == self.max_steps:
+            self.done = True
+            return Step(reward=reward,
+                        new_observation=None,
+                        done=True)
 
         # Episode is not finished
-        return Step(reward=reward, new_observation=self.take_screenshot(), done=False)
+        return Step(reward=reward,
+                    new_observation=self.take_screenshot(),
+                    done=False)
 
     def update(self, dt):
+
         # Game logic
         for ball in self.balls:
             if not ball.is_on_table:
@@ -582,7 +652,6 @@ class BilliardGame(arcade.Window):
             if self.table.is_in_pocket(ball):
                 ball.is_on_table = False
                 ball.velocity_x = ball.velocity_y = 0
-                print("[BALL_IN_POCKET]")
                 continue
 
             # Check if a cushion-collision has occured
@@ -634,12 +703,22 @@ def main():
     parser.add_argument("--num_balls",
                         help="How many balls to use",
                         type=int,
-                        default=40)
+                        default=30)
 
     parser.add_argument("--ball_radius",
                         help="Radius of the balls",
                         type=float,
                         default=10.)
+
+    parser.add_argument("--fps",
+                        help="How many frames should be rendered per second",
+                        type=float,
+                        default=200)
+
+    parser.add_argument("--interactive", "-i",
+                        help="Whether to perform a test run",
+                        action="store_true",
+                        default=False)
 
     # Parse
     args = parser.parse_args()
@@ -649,11 +728,24 @@ def main():
     assert args.pocket_width >= 3 * args.ball_radius, "Pockets are not wide enough!"
 
     # Initialize game
-    game = BilliardGame(**vars(args))
-    game.balls[0].exert_force(150, 400)
-    arcade.set_background_color(arcade.color.AIR_FORCE_BLUE)
-    # arcade.set_background_color(arcade.color.WHITE_SMOKE)
-    arcade.run()
+    args = vars(args)
+    interactive = args.pop("interactive")
+    game = BilliardGame(**args)
+    arcade.set_background_color(AIR_FORCE_BLUE)
+
+    if interactive:
+        # Make visible
+        game.set_visible(True)
+
+        # Apply force on cue ball
+        game.balls[0].exert_force(vx=250, vy=250)
+
+        # Render loop
+        arcade.run()
+    else:
+        step = game.step(phi_deg=45, velocity_magnitude=300)
+        io.imshow(step.new_observation)
+        plt.show()
 
 
 if __name__ == "__main__":
