@@ -8,13 +8,23 @@ from abc import ABC, abstractmethod
 from collections import namedtuple
 import matplotlib.pyplot as plt
 from skimage import io
+from time import process_time_ns
+import math
+from bisect import bisect
 
+# Benchmark step function
+BENCHMARK = True
+
+# Named tuples
 Step = namedtuple("Step", ["reward", "new_observation", "done"])
+Cell = namedtuple("Cell", ["i", "j"])
+
 
 # Environment constants
 MU = 2.
 G = 9.81
 MIN_VELOCITY = 10
+MIN_VELOCITY_SQ = MIN_VELOCITY**2
 
 # Colors
 AIR_FORCE_BLUE = (93, 138, 168)
@@ -80,34 +90,27 @@ class LinearCushionElement(CushionElement):
         arcade.draw_rectangle_filled(center_x=self.xf, center_y=self.yf, width=self.wf, height=self.hf, color=self.color)
 
     def get_new_ball_direction(self, ball):
-        velocity = np.array([ball.velocity_x, ball.velocity_y])
-        n = np.array([-self.p[1], self.p[0]])
-        return velocity - 2 * np.dot(velocity, n) * n
+        n_x = -self.p[1]
+        n_y = self.p[0]
+
+        proj = 2 * (ball.velocity_x * n_x + ball.velocity_y * n_y)
+        return ball.velocity_x - proj * n_x, ball.velocity_y - proj * n_y
 
     def collides_with_ball(self, ball):
-        """
-        c.f. https://en.wikipedia.org/wiki/Line%E2%80%93sphere_intersection
-        :param ball:
-        :return:
-        """
-
-        # Ball coordinates
-        xc, yc, rc = ball.center_x, ball.center_y, ball.radius
-        c = np.array([xc, yc])
 
         # Origin (line) to center (ball)
-        v = self.o - c
+        v_x = self.o[0] - ball.center_x
+        v_y = self.o[1] - ball.center_y
 
         # Existence of intersection point(s)
-        discriminant = np.square(np.dot(self.p, v)) - np.dot(v, v) + rc * rc
-
-        if discriminant < 0.:
+        discriminant = (self.p[0] * v_x + self.p[1] * v_y)**2 - v_x**2 - v_y**2 + ball.radius**2
+        if discriminant < 0:
             return False
 
         # Check where intersection occurs (could occur outside of line segment)
-        d = -np.dot(self.p, v)
+        d = -self.p[0] * v_x - self.p[1] * v_y
 
-        return 0. < d < self.p_norm
+        return 0 < d < self.p_norm
 
 
 class CircularCushionElement(CushionElement):
@@ -140,10 +143,11 @@ class CircularCushionElement(CushionElement):
         return velocity - 2 * np.dot(velocity, link) * link
 
     def collides_with_ball(self, ball):
-        cushion_center = np.array([self.xc, self.yc])
-        ball_center = np.array([ball.center_x, ball.center_y])
-        dist = np.linalg.norm(cushion_center - ball_center, ord=2)
-        return dist < self.r + ball.radius
+
+        dx = self.xc - ball.center_x
+        dy = self.yc - ball.center_y
+        d_2 = dx * dx + dy * dy
+        return d_2 < (self.r + ball.radius)**2
 
 
 class Pocket(ABC):
@@ -199,8 +203,10 @@ class RectangularPocket(Pocket):
                                      color=self.color)
 
     def __contains__(self, ball):
-        horizontally = self.xa - self.width/2 <= ball.center_x <= self.xa + self.width/2
-        vertically = self.ya - self.height/2 <= ball.center_y <= self.ya + self.height/2
+        w_half = self.height/2
+        h_half = self.height/2
+        horizontally = self.xa - w_half <= ball.center_x <= self.xa + w_half
+        vertically = self.ya - h_half <= ball.center_y <= self.ya + h_half
         return horizontally and vertically
 
 
@@ -366,10 +372,12 @@ class PoolTable:
 
 
 class BilliardBall:
-    def __init__(self, radius, color, reward):
+    def __init__(self, table, radius, color, reward):
 
         # Fixed
+        self.table = table
         self.radius = radius
+        self.four_times_radius_sq = 4 * radius**2
         self.color = color
         self.reward = reward
 
@@ -378,6 +386,7 @@ class BilliardBall:
         self.last_cushion = None
         self.last_ball = None
         self.center_x, self.center_y = None, None
+        self.grid_cell = None
 
         # Past & present velocities
         self._velocity_x, self._velocity_y = 0, 0     # pixels/sec
@@ -400,7 +409,7 @@ class BilliardBall:
         self._next_velocity_y = value
 
     def is_moving(self):
-        return np.linalg.norm([self.velocity_x, self.velocity_y], ord=2) > MIN_VELOCITY
+        return self.velocity_x**2 + self.velocity_y**2 > MIN_VELOCITY_SQ
 
     def exert_force(self, vx, vy):
         self._velocity_x = self._next_velocity_x = vx
@@ -413,57 +422,63 @@ class BilliardBall:
 
     def update(self, dt):
 
-        # Friction
-        magnitude = np.linalg.norm([self._next_velocity_x, self._next_velocity_y], ord=2)
-        if magnitude > MIN_VELOCITY:
-            self._next_velocity_x -= MU * G * dt * self._next_velocity_x/magnitude
-            self._next_velocity_y -= MU * G * dt * self._next_velocity_y/magnitude
-        else:
-            self._next_velocity_x = 0
-            self._next_velocity_y = 0
-
         # Write back
         self._velocity_x = self._next_velocity_x
         self._velocity_y = self._next_velocity_y
 
-        self.center_x += self.velocity_x * dt
-        self.center_y += self.velocity_y * dt
+        if self.is_moving():
+            # Friction
+            magnitude = np.linalg.norm([self._velocity_x, self._velocity_y], ord=2)
+            self._velocity_x -= MU * G * dt * self._velocity_x/magnitude
+            self._velocity_y -= MU * G * dt * self._velocity_y/magnitude
+
+            # Apply velocity
+            self.center_x += self._velocity_x * dt
+            self.center_y += self._velocity_y * dt
+
+            # Determine position within grid
+            self.grid_cell = self.table.assign_grid_cell(self.center_x, self.center_y)
+        else:
+            self._velocity_x = 0
+            self._velocity_y = 0
+
+        self._next_velocity_x = self._velocity_x
+        self._next_velocity_y = self._velocity_y
 
     def get_new_ball_direction(self, other_ball):
 
-        # Extract coordinates
-        velocity = np.array([self.velocity_x, self.velocity_y])
-        other_velocity = np.array([other_ball.velocity_x, other_ball.velocity_y])
-        ball_center = np.array([self.center_x, self.center_y])
-        other_ball_center = np.array([other_ball.center_x, other_ball.center_y])
+        l_x = self.center_x - other_ball.center_x
+        l_y = self.center_y - other_ball.center_y
+        l_norm = math.sqrt(l_x * l_x + l_y * l_y)
+        l_x /= l_norm
+        l_y /= l_norm
 
-        # Direction of intersection (relative to cushion center)
-        link = ball_center - other_ball_center
-        link /= np.linalg.norm(link, ord=2)
+        proj_1 = self.velocity_x * l_x + self.velocity_y * l_y
+        v1_normal_x = proj_1 * l_x
+        v1_normal_y = proj_1 * l_y
 
-        # Project velocities on normal component
-        v1_normal = np.dot(velocity, link) * link
-        v2_normal = np.dot(other_velocity, link) * link
+        proj_2 = other_ball.velocity_x * l_x + other_ball.velocity_y * l_y
+        v2_normal_x = proj_2 * l_x
+        v2_normal_y = proj_2 * l_y
 
-        # Project velocities on tangential component
-        v1_tangential = velocity - v1_normal
+        v_1_tangential_x = self.velocity_x - v1_normal_x
+        v_1_tangential_y = self.velocity_y - v1_normal_y
 
-        return v1_tangential + v2_normal
+        return v_1_tangential_x + v2_normal_x, v_1_tangential_y + v2_normal_y
 
     def is_colliding_with_ball(self, other_ball):
 
-        if self is other_ball:
-            return False
+        d_x = self.center_x - other_ball.center_x
+        d_y = self.center_y - other_ball.center_y
+        d_2 = d_x * d_x + d_y * d_y
 
-        u = np.array([self.center_x, self.center_y])
-        v = np.array([other_ball.center_x, other_ball.center_y])
-        ru = self.radius
-        rv = other_ball.radius
+        return d_2 <= self.four_times_radius_sq
 
-        # Center-to-center distance
-        d = np.linalg.norm(u - v, ord=2)
+    def is_in_neighborhood(self, other_ball):
+        horizontally = abs(self.grid_cell.i - other_ball.grid_cell.i) <= 1
+        vertically = abs(self.grid_cell.j - other_ball.grid_cell.j) <= 1
 
-        return d <= ru + rv
+        return horizontally and vertically
 
     def reset(self):
         self.__init__(radius=self.radius, color=self.color, reward=self.reward)
@@ -488,7 +503,7 @@ class BilliardGame(arcade.Window):
 
         # Copy
         self.pocket_width = pocket_width
-        self.pocket_radius = pocket_width / (2 * (np.sqrt(2) - 1))
+        self.pocket_radius = pocket_width / (2 * (math.sqrt(2) - 1))
         self.fps = fps
 
         # Game-specific
@@ -496,7 +511,7 @@ class BilliardGame(arcade.Window):
         self.ball_radius = ball_radius
 
         # Scene construction
-        self.balls = [BilliardBall(radius=ball_radius, color=WHITE_SMOKE, reward=None)]
+        self.balls = [BilliardBall(table=self, radius=ball_radius, color=WHITE_SMOKE, reward=None)]
 
         # Linearly interpolate colors
         start_color = np.array(RED)
@@ -510,10 +525,18 @@ class BilliardGame(arcade.Window):
             self.rewards = 2 * self.rewards - 1
 
         for k in range(num_balls - 1):
-            self.balls.append(BilliardBall(radius=ball_radius, color=color[k].astype(np.int32), reward=self.rewards[k]))
+            self.balls.append(BilliardBall(table=self,
+                                           radius=ball_radius,
+                                           color=color[k].astype(np.int32),
+                                           reward=self.rewards[k]))
 
         self.table = PoolTable(screen_width=screen_width, screen_height=screen_height,
                                pocket_width=pocket_width, pocket_radius=self.pocket_radius)
+
+        # Defintion of grid (used to make collision detection efficient)
+        grid_step = 3 * ball_radius
+        self.grid_x = np.arange(start=0, stop=self.width, step=grid_step)
+        self.grid_y = np.arange(start=0, stop=self.height, step=grid_step)
 
         # Assign ball positions
         self.assign_initial_ball_positions()
@@ -523,15 +546,29 @@ class BilliardGame(arcade.Window):
         self.max_steps = (self.num_balls - 1) // 2
         self.done = False
 
+    def assign_grid_cell(self, x_0, y_0):
+
+        # Find interval
+        i = bisect(self.grid_x, x_0) - 1
+        j = bisect(self.grid_y, y_0) - 1
+
+        return Cell(i=i, j=j)
+
     def assign_initial_ball_positions(self):
 
         # Enforce correct ball positions
         offset = self.pocket_radius + 2 * self.ball_radius
+
+
+        # TODO: Remove
+        i = 1
         for ball_id, ball in enumerate(self.balls):
 
             while True:
                 # Proposal
+                np.random.seed(i)
                 proposal_x = np.random.uniform(offset, self.width - offset)
+                np.random.seed(i+1)
                 proposal_y = np.random.uniform(offset, self.height - offset)
 
                 # Set position
@@ -545,7 +582,12 @@ class BilliardGame(arcade.Window):
 
                 # Proceed with next ball if no collision has been detected
                 if not is_collision:
+
+                    # Assign initiali grid cell
+                    ball.grid_cell = self.assign_grid_cell(x_0=proposal_x, y_0=proposal_y)
                     break
+
+                i += 2
 
     def on_draw(self):
         self.clear()
@@ -587,6 +629,11 @@ class BilliardGame(arcade.Window):
 
         assert (self.step_counter < self.max_steps) and not self.done, "Episode is already over! Reset is necessary."
 
+        # Benchmarking
+        duration = None
+        if BENCHMARK:
+            duration = process_time_ns()
+
         # Radians
         phi_grad = np.pi/180. * phi_deg
 
@@ -602,6 +649,7 @@ class BilliardGame(arcade.Window):
 
         # Update until movement stops or cue balls is pocketed
         delta_time = 1/self.fps
+        num_frames = 0
         while True:
             self.update(delta_time)
 
@@ -613,6 +661,8 @@ class BilliardGame(arcade.Window):
             # No balls are moving
             if all(not ball.is_moving() for ball in self.balls):
                 break
+
+            num_frames += 1
 
         # Count number of balls on the table after performing the shot
         balls_on_table_after = {ball for ball in self.balls[1:] if ball.is_on_table}
@@ -631,9 +681,19 @@ class BilliardGame(arcade.Window):
                         new_observation=None,
                         done=True)
 
+        # Take screenshot
+        screenshot = self.take_screenshot()
+
+        # Benchmarking
+        if BENCHMARK:
+            duration = (process_time_ns() - duration)/(10**9)
+            print("Num frames: ", num_frames)
+            print("Duration: ", duration)
+            print("Frames/sec: ", num_frames/duration)
+
         # Episode is not finished
         return Step(reward=reward,
-                    new_observation=self.take_screenshot(),
+                    new_observation=screenshot,
                     done=False)
 
     def update(self, delta_time):
@@ -664,7 +724,7 @@ class BilliardGame(arcade.Window):
 
             # Check if a ball-ball collision has occured
             for other_ball in self.balls:
-                if ball is other_ball:
+                if ball is other_ball or not ball.is_in_neighborhood(other_ball):
                     continue
 
                 if ball.is_colliding_with_ball(other_ball) and other_ball is not ball.last_ball:
@@ -674,8 +734,9 @@ class BilliardGame(arcade.Window):
                     ball.last_ball = other_ball
                     ball.last_cushion = None
                     break
+
+        # Update ball position
         for ball in self.balls:
-            # Update ball position
             ball.update(actual_delta_time)
 
 
@@ -711,7 +772,7 @@ def main():
     parser.add_argument("--fps",
                         help="How many frames should be rendered per second",
                         type=float,
-                        default=60)
+                        default=30)
 
     parser.add_argument("--interactive", "-i",
                         help="Whether to perform a test run",
