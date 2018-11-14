@@ -209,11 +209,6 @@ class PoolTable:
         self.pocket_width = pocket_width
         self.pocket_radius = pocket_radius
 
-        # Definition of grid (used to make collision detection efficient)
-        grid_step = 2 * pocket_width
-        self.grid_x = np.arange(start=0, stop=screen_width, step=grid_step)
-        self.grid_y = np.arange(start=0, stop=screen_height, step=grid_step)
-
         """
         TABLE GEOMETRY
         """
@@ -368,14 +363,6 @@ class PoolTable:
 
         return None
 
-    def assign_grid_cell(self, x_0, y_0):
-
-        # Find interval
-        i = bisect(self.grid_x, x_0) - 1
-        j = bisect(self.grid_y, y_0) - 1
-
-        return Cell(i=i, j=j)
-
 
 class BilliardBall:
     def __init__(self, table, radius, color, reward):
@@ -487,7 +474,7 @@ class BilliardBall:
         return horizontally and vertically
 
     def reset(self):
-        self.__init__(radius=self.radius, color=self.color, reward=self.reward, table=self.table)
+        self.__init__(radius=self.radius, color=self.color, reward=self.reward)
 
 
 class BilliardGame(arcade.Window):
@@ -507,9 +494,6 @@ class BilliardGame(arcade.Window):
         set_window(self)
         set_viewport(0, self.width, 0, self.height)
 
-        # Background color
-        arcade.set_background_color(AIR_FORCE_BLUE)
-
         # Copy
         self.pocket_width = pocket_width
         self.pocket_radius = pocket_width / (2 * (math.sqrt(2) - 1))
@@ -519,12 +503,8 @@ class BilliardGame(arcade.Window):
         self.num_balls = num_balls
         self.ball_radius = ball_radius
 
-        # Table definition
-        self.table = PoolTable(screen_width=screen_width, screen_height=screen_height,
-                               pocket_width=pocket_width, pocket_radius=self.pocket_radius)
-
         # Scene construction
-        self.balls = [BilliardBall(table=self.table, radius=ball_radius, color=WHITE_SMOKE, reward=None)]
+        self.balls = [BilliardBall(table=self, radius=ball_radius, color=WHITE_SMOKE, reward=None)]
 
         # Linearly interpolate colors
         start_color = np.array(RED)
@@ -538,10 +518,18 @@ class BilliardGame(arcade.Window):
             self.rewards = 2 * self.rewards - 1
 
         for k in range(num_balls - 1):
-            self.balls.append(BilliardBall(table=self.table,
+            self.balls.append(BilliardBall(table=self,
                                            radius=ball_radius,
                                            color=color[k].astype(np.int32),
                                            reward=self.rewards[k]))
+
+        self.table = PoolTable(screen_width=screen_width, screen_height=screen_height,
+                               pocket_width=pocket_width, pocket_radius=self.pocket_radius)
+
+        # Defintion of grid (used to make collision detection efficient)
+        grid_step = 3 * ball_radius
+        self.grid_x = np.arange(start=0, stop=self.width, step=grid_step)
+        self.grid_y = np.arange(start=0, stop=self.height, step=grid_step)
 
         # Assign ball positions
         self.assign_initial_ball_positions()
@@ -550,6 +538,14 @@ class BilliardGame(arcade.Window):
         self.step_counter = 0
         self.max_steps = (self.num_balls - 1) // 2
         self.done = False
+
+    def assign_grid_cell(self, x_0, y_0):
+
+        # Find interval
+        i = bisect(self.grid_x, x_0) - 1
+        j = bisect(self.grid_y, y_0) - 1
+
+        return Cell(i=i, j=j)
 
     def assign_initial_ball_positions(self):
 
@@ -576,7 +572,7 @@ class BilliardGame(arcade.Window):
                 if not is_collision:
 
                     # Assign initiali grid cell
-                    ball.grid_cell = self.table.assign_grid_cell(x_0=proposal_x, y_0=proposal_y)
+                    ball.grid_cell = self.assign_grid_cell(x_0=proposal_x, y_0=proposal_y)
                     break
 
     def on_draw(self):
@@ -724,6 +720,9 @@ def interactive(screen_width, screen_height, fps, pocket_width, num_balls, ball_
                         pocket_width=pocket_width,
                         num_balls=num_balls,
                         ball_radius=ball_radius)
+
+    # Background color
+    arcade.set_background_color(AIR_FORCE_BLUE)
 
     # Make visible
     game.set_visible(True)
