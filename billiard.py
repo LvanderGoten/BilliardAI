@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from collections import namedtuple
 import math
 from bisect import bisect
+import numba
 
 # Named tuples
 Step = namedtuple("Step", ["reward", "new_observation", "done"])
