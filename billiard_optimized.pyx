@@ -1,3 +1,4 @@
+#cython: boundscheck=False, wraparound=False, nonecheck=False
 import arcade
 from arcade.window_commands import set_viewport
 from arcade.window_commands import set_window
@@ -8,6 +9,7 @@ from collections import namedtuple
 import math
 from bisect import bisect
 from time import process_time_ns
+from cpython cimport bool
 
 # Named tuples
 Step = namedtuple("Step", ["reward", "new_observation", "done"])
@@ -54,12 +56,15 @@ class LinearCushionElement(CushionElement):
         self.orientation = "v" if np.isclose(self.xa, self.xb) else "h"
 
         # Origin of the line
-        self.o = np.array([xa, ya])
+        self.o_x = xa
+        self.o_y = ya
 
         # Normalized direction vector
-        p = np.array([xb - xa, yb - ya])
-        self.p_norm = np.linalg.norm(p, ord=2)
-        self.p = p / self.p_norm
+        p_x = xb - xa
+        p_y = yb - ya
+        self.p_norm = math.sqrt(p_x * p_x + p_y * p_y)
+        self.p_x = p_x / self.p_norm
+        self.p_y = p_y / self.p_norm
 
         # Filled rectangle
         eps = 1
@@ -84,37 +89,44 @@ class LinearCushionElement(CushionElement):
         arcade.draw_rectangle_filled(center_x=self.xf, center_y=self.yf, width=self.wf, height=self.hf, color=self.color)
 
     @staticmethod
-    def _get_new_ball_direction(velocity_x, velocity_y, p):
-        n_x = -p[1]
-        n_y = p[0]
+    def _get_new_ball_direction(float velocity_x, float velocity_y,
+                                float p_x, float p_y):
+        cdef float n_x = -p_y
+        cdef float n_y = p_x
 
-        proj = 2 * (velocity_x * n_x + velocity_y * n_y)
-        return velocity_x - proj * n_x, velocity_y - proj * n_y
+        cdef float proj = 2 * (velocity_x * n_x + velocity_y * n_y)
+        cdef velocity_x_proj = velocity_x - proj * n_x
+        cdef velocity_y_proj = velocity_y - proj * n_y
+        return velocity_x_proj, velocity_y_proj
 
     def get_new_ball_direction(self, ball):
-        return LinearCushionElement._get_new_ball_direction(ball.velocity_x, ball.velocity_y, self.p)
+        return LinearCushionElement._get_new_ball_direction(ball.velocity_x, ball.velocity_y, self.p_x, self.p_y)
 
     @staticmethod
-    def _collides_with_ball(o, p, p_norm,
-                            center_x, center_y,
-                            radius):
+    def _collides_with_ball(float o_x, float o_y,
+                            float p_x, float p_y,
+                            float p_norm,
+                            float center_x, float center_y,
+                            float radius):
 
         # Origin (line) to center (ball)
-        v_x = o[0] - center_x
-        v_y = o[1] - center_y
+        cdef float v_x = o_x - center_x
+        cdef float v_y = o_y - center_y
 
         # Existence of intersection point(s)
-        discriminant = (p[0] * v_x + p[1] * v_y)**2 - v_x**2 - v_y**2 + radius**2
+        cdef float discriminant = (p_x * v_x + p_y * v_y)**2 - v_x**2 - v_y**2 + radius**2
         if discriminant < 0:
             return False
 
         # Check where intersection occurs (could occur outside of line segment)
-        d = -p[0] * v_x - p[1] * v_y
+        cdef float d = -p_x * v_x - p_y * v_y
 
         return 0 < d < p_norm
 
     def collides_with_ball(self, ball):
-        return LinearCushionElement._collides_with_ball(o=self.o, p=self.p, p_norm=self.p_norm,
+        return LinearCushionElement._collides_with_ball(o_x=self.o_x, o_y=self.o_y,
+                                                        p_x=self.p_x, p_y=self.p_y,
+                                                        p_norm=self.p_norm,
                                                         center_x=ball.center_x, center_y=ball.center_y,
                                                         radius=ball.radius)
 
@@ -136,17 +148,19 @@ class CircularCushionElement(CushionElement):
                                color=self.color)
 
     @staticmethod
-    def _get_new_ball_direction(center_x, center_y,
-                                velocity_x, velocity_y,
-                                xc, yc):
+    def _get_new_ball_direction(float center_x, float center_y,
+                                float velocity_x, float velocity_y,
+                                float xc, float yc):
 
-        link_x = center_x - xc
-        link_y = center_y - yc
-        link_norm = math.sqrt(link_x**2 + link_y**2)
+        cdef float link_x = center_x - xc
+        cdef float link_y = center_y - yc
+        cdef float link_norm = math.sqrt(link_x**2 + link_y**2)
         link_x /= link_norm
         link_y /= link_norm
-        proj = velocity_x * link_x + velocity_y * link_y
-        return velocity_x - 2 * proj * link_x, velocity_y - 2 * proj * link_y
+        cdef float proj = velocity_x * link_x + velocity_y * link_y
+        cdef float velocity_x_proj = velocity_x - 2 * proj * link_x
+        cdef float velocity_y_proj = velocity_y - 2 * proj * link_y
+        return velocity_x_proj, velocity_y_proj
 
     def get_new_ball_direction(self, ball):
 
@@ -155,12 +169,12 @@ class CircularCushionElement(CushionElement):
                                                               xc=self.xc, yc=self.yc)
 
     @staticmethod
-    def _collides_with_ball(xc, yc,
-                            center_x, center_y,
-                            r, radius):
-        dx = xc - center_x
-        dy = yc - center_y
-        d_2 = dx * dx + dy * dy
+    def _collides_with_ball(float xc, float yc,
+                            float center_x, float center_y,
+                            float r, float radius):
+        cdef float dx = xc - center_x
+        cdef float dy = yc - center_y
+        cdef float d_2 = dx * dx + dy * dy
         return d_2 < (r + radius)**2
 
     def collides_with_ball(self, ball):
@@ -194,22 +208,24 @@ class TriangularPocket(Pocket):
         #                             color=self.color)
 
     @staticmethod
-    def _contains_ball(xa, ya,
-                       xb, yb,
-                       xc, yc,
-                       center_x, center_y):
-        x1, y1 = xa, ya
-        x2, y2 = xb, yb
-        x3, y3 = xc, yc
-        x, y = center_x, center_y
+    def _contains_ball(float xa, float ya,
+                       float xb, float yb,
+                       float xc, float yc,
+                       float center_x, float center_y):
 
         # Barycentric coordinates
-        denominator = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
-        u = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3))/denominator
-        v = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3))/denominator
-        w = 1 - u - v
+        cdef float denominator = (yb - yc) * (xa - xc) + (xc - xb) * (ya - yc)
+        cdef float u = ((yb - yc) * (center_x - xc) + (xc - xb) * (center_y - yc))/denominator
+        cdef float v = ((yc - ya) * (center_x - xc) + (xa - xc) * (center_y - yc))/denominator
+        cdef float w = 1 - u - v
 
-        return 0 <= u <= 1 and 0 <= v <= 1 and 0 <= w <= 1
+        cdef bool u_in_range = 0 <= u <= 1
+        cdef bool v_in_range = 0 <= v <= 1
+        cdef bool w_in_range = 0 <= w <= 1
+
+        cdef bool in_range = u_in_range and v_in_range and w_in_range
+
+        return in_range
 
     def __contains__(self, ball):
         return TriangularPocket._contains_ball(xa=self.xa, ya=self.ya,
@@ -232,13 +248,13 @@ class RectangularPocket(Pocket):
                                      color=self.color)
 
     @staticmethod
-    def _contains_ball(height, width,
-                       xa, ya,
-                       center_x, center_y):
-        w_half = width/2
-        h_half = height/2
-        horizontally = xa - w_half <= center_x <= xa + w_half
-        vertically = ya - h_half <= center_y <= ya + h_half
+    def _contains_ball(float height, float width,
+                       float xa, float ya,
+                       float center_x, float center_y):
+        cdef float w_half = width/2
+        cdef float h_half = height/2
+        cdef bool horizontally = xa - w_half <= center_x <= xa + w_half
+        cdef bool vertically = ya - h_half <= center_y <= ya + h_half
         return horizontally and vertically
 
     def __contains__(self, ball):
@@ -459,7 +475,7 @@ class BilliardBall:
         self._next_velocity_y = value
 
     @staticmethod
-    def _is_moving(velocity_x, velocity_y):
+    def _is_moving(float velocity_x, float velocity_y):
         return velocity_x**2 + velocity_y**2 > MIN_VELOCITY_SQ
 
     def is_moving(self):
@@ -500,26 +516,26 @@ class BilliardBall:
         self._next_velocity_y = self._velocity_y
 
     @staticmethod
-    def _get_new_ball_direction(center_x, center_y,
-                                other_center_x, other_center_y,
-                                velocity_x, velocity_y,
-                                other_velocity_x, other_velocity_y):
-        l_x = center_x - other_center_x
-        l_y = center_y - other_center_y
-        l_norm = math.sqrt(l_x * l_x + l_y * l_y)
+    def _get_new_ball_direction(float center_x, float center_y,
+                                float other_center_x, float other_center_y,
+                                float velocity_x, float velocity_y,
+                                float other_velocity_x, float other_velocity_y):
+        cdef float l_x = center_x - other_center_x
+        cdef float l_y = center_y - other_center_y
+        cdef float l_norm = math.sqrt(l_x * l_x + l_y * l_y)
         l_x /= l_norm
         l_y /= l_norm
 
-        proj_1 = velocity_x * l_x + velocity_y * l_y
-        v1_normal_x = proj_1 * l_x
-        v1_normal_y = proj_1 * l_y
+        cdef float proj_1 = velocity_x * l_x + velocity_y * l_y
+        cdef float v1_normal_x = proj_1 * l_x
+        cdef float v1_normal_y = proj_1 * l_y
 
-        proj_2 = other_velocity_x * l_x + other_velocity_y * l_y
-        v2_normal_x = proj_2 * l_x
-        v2_normal_y = proj_2 * l_y
+        cdef float proj_2 = other_velocity_x * l_x + other_velocity_y * l_y
+        cdef float v2_normal_x = proj_2 * l_x
+        cdef float v2_normal_y = proj_2 * l_y
 
-        v_1_tangential_x = velocity_x - v1_normal_x
-        v_1_tangential_y = velocity_y - v1_normal_y
+        cdef float v_1_tangential_x = velocity_x - v1_normal_x
+        cdef float v_1_tangential_y = velocity_y - v1_normal_y
 
         return v_1_tangential_x + v2_normal_x, v_1_tangential_y + v2_normal_y
 
@@ -530,12 +546,12 @@ class BilliardBall:
                                                     other_velocity_x=other_ball.velocity_x, other_velocity_y=other_ball.velocity_y)
 
     @staticmethod
-    def _is_colliding_with_ball(center_x, center_y,
-                                other_center_x, other_center_y,
-                                four_times_radius_sq):
-        d_x = center_x - other_center_x
-        d_y = center_y - other_center_y
-        d_2 = d_x * d_x + d_y * d_y
+    def _is_colliding_with_ball(float center_x, float center_y,
+                                float other_center_x, float other_center_y,
+                                float four_times_radius_sq):
+        cdef float d_x = center_x - other_center_x
+        cdef float d_y = center_y - other_center_y
+        cdef float d_2 = d_x * d_x + d_y * d_y
 
         return d_2 <= four_times_radius_sq
 
