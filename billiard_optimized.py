@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from collections import namedtuple
 import math
 from bisect import bisect
+from time import process_time_ns
 
 # Named tuples
 Step = namedtuple("Step", ["reward", "new_observation", "done"])
@@ -82,28 +83,40 @@ class LinearCushionElement(CushionElement):
         # Draw a filled rectangle
         arcade.draw_rectangle_filled(center_x=self.xf, center_y=self.yf, width=self.wf, height=self.hf, color=self.color)
 
+    @staticmethod
+    def _get_new_ball_direction(velocity_x, velocity_y, p):
+        n_x = -p[1]
+        n_y = p[0]
+
+        proj = 2 * (velocity_x * n_x + velocity_y * n_y)
+        return velocity_x - proj * n_x, velocity_y - proj * n_y
+
     def get_new_ball_direction(self, ball):
-        n_x = -self.p[1]
-        n_y = self.p[0]
+        return LinearCushionElement._get_new_ball_direction(ball.velocity_x, ball.velocity_y, self.p)
 
-        proj = 2 * (ball.velocity_x * n_x + ball.velocity_y * n_y)
-        return ball.velocity_x - proj * n_x, ball.velocity_y - proj * n_y
-
-    def collides_with_ball(self, ball):
+    @staticmethod
+    def _collides_with_ball(o, p, p_norm,
+                            center_x, center_y,
+                            radius):
 
         # Origin (line) to center (ball)
-        v_x = self.o[0] - ball.center_x
-        v_y = self.o[1] - ball.center_y
+        v_x = o[0] - center_x
+        v_y = o[1] - center_y
 
         # Existence of intersection point(s)
-        discriminant = (self.p[0] * v_x + self.p[1] * v_y)**2 - v_x**2 - v_y**2 + ball.radius**2
+        discriminant = (p[0] * v_x + p[1] * v_y)**2 - v_x**2 - v_y**2 + radius**2
         if discriminant < 0:
             return False
 
         # Check where intersection occurs (could occur outside of line segment)
-        d = -self.p[0] * v_x - self.p[1] * v_y
+        d = -p[0] * v_x - p[1] * v_y
 
-        return 0 < d < self.p_norm
+        return 0 < d < p_norm
+
+    def collides_with_ball(self, ball):
+        return LinearCushionElement._collides_with_ball(o=self.o, p=self.p, p_norm=self.p_norm,
+                                                        center_x=ball.center_x, center_y=ball.center_y,
+                                                        radius=ball.radius)
 
 
 class CircularCushionElement(CushionElement):
@@ -122,25 +135,38 @@ class CircularCushionElement(CushionElement):
                                start_angle=self.phi_start, end_angle=self.phi_end,
                                color=self.color)
 
+    @staticmethod
+    def _get_new_ball_direction(center_x, center_y,
+                                velocity_x, velocity_y,
+                                xc, yc):
+
+        link_x = center_x - xc
+        link_y = center_y - yc
+        link_norm = math.sqrt(link_x**2 + link_y**2)
+        link_x /= link_norm
+        link_y /= link_norm
+        proj = velocity_x * link_x + velocity_y * link_y
+        return velocity_x - 2 * proj * link_x, velocity_y - 2 * proj * link_y
+
     def get_new_ball_direction(self, ball):
 
-        # Extract coordinates
-        velocity = np.array([ball.velocity_x, ball.velocity_y])
-        cushion_center = np.array([self.xc, self.yc])
-        ball_center = np.array([ball.center_x, ball.center_y])
+        return CircularCushionElement._get_new_ball_direction(center_x=ball.center_x, center_y=ball.center_y,
+                                                              velocity_x=ball.velocity_x, velocity_y=ball.velocity_y,
+                                                              xc=self.xc, yc=self.yc)
 
-        # Direction of intersection (relative to cushion center)
-        link = ball_center - cushion_center
-        link /= np.linalg.norm(link, ord=2)
-
-        return velocity - 2 * np.dot(velocity, link) * link
+    @staticmethod
+    def _collides_with_ball(xc, yc,
+                            center_x, center_y,
+                            r, radius):
+        dx = xc - center_x
+        dy = yc - center_y
+        d_2 = dx * dx + dy * dy
+        return d_2 < (r + radius)**2
 
     def collides_with_ball(self, ball):
-
-        dx = self.xc - ball.center_x
-        dy = self.yc - ball.center_y
-        d_2 = dx * dx + dy * dy
-        return d_2 < (self.r + ball.radius)**2
+        return CircularCushionElement._collides_with_ball(xc=self.xc, yc=self.yc,
+                                                          center_x=ball.center_x, center_y=ball.center_y,
+                                                          r=self.r, radius=ball.radius)
 
 
 class Pocket(ABC):
@@ -167,11 +193,15 @@ class TriangularPocket(Pocket):
         #                             x3=self.xc, y3=self.yc,
         #                             color=self.color)
 
-    def __contains__(self, ball):
-        x1, y1 = self.xa, self.ya
-        x2, y2 = self.xb, self.yb
-        x3, y3 = self.xc, self.yc
-        x, y = ball.center_x, ball.center_y
+    @staticmethod
+    def _contains_ball(xa, ya,
+                       xb, yb,
+                       xc, yc,
+                       center_x, center_y):
+        x1, y1 = xa, ya
+        x2, y2 = xb, yb
+        x3, y3 = xc, yc
+        x, y = center_x, center_y
 
         # Barycentric coordinates
         denominator = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
@@ -180,6 +210,12 @@ class TriangularPocket(Pocket):
         w = 1 - u - v
 
         return 0 <= u <= 1 and 0 <= v <= 1 and 0 <= w <= 1
+
+    def __contains__(self, ball):
+        return TriangularPocket._contains_ball(xa=self.xa, ya=self.ya,
+                                               xb=self.xb, yb=self.yb,
+                                               xc=self.xc, yc=self.yc,
+                                               center_x=ball.center_x, center_y=ball.center_y)
 
 
 class RectangularPocket(Pocket):
@@ -195,12 +231,20 @@ class RectangularPocket(Pocket):
                                      width=self.width, height=self.height,
                                      color=self.color)
 
-    def __contains__(self, ball):
-        w_half = self.height/2
-        h_half = self.height/2
-        horizontally = self.xa - w_half <= ball.center_x <= self.xa + w_half
-        vertically = self.ya - h_half <= ball.center_y <= self.ya + h_half
+    @staticmethod
+    def _contains_ball(height, width,
+                       xa, ya,
+                       center_x, center_y):
+        w_half = width/2
+        h_half = height/2
+        horizontally = xa - w_half <= center_x <= xa + w_half
+        vertically = ya - h_half <= center_y <= ya + h_half
         return horizontally and vertically
+
+    def __contains__(self, ball):
+        return RectangularPocket._contains_ball(height=self.height, width=self.width,
+                                                xa=self.xa, ya=self.ya,
+                                                center_x=ball.center_x, center_y=ball.center_y)
 
 
 class PoolTable:
@@ -208,6 +252,11 @@ class PoolTable:
 
         self.pocket_width = pocket_width
         self.pocket_radius = pocket_radius
+
+        # Definition of grid (used to make collision detection efficient)
+        grid_step = 2 * pocket_width
+        self.grid_x = np.arange(start=0, stop=screen_width, step=grid_step)
+        self.grid_y = np.arange(start=0, stop=screen_height, step=grid_step)
 
         """
         TABLE GEOMETRY
@@ -363,6 +412,14 @@ class PoolTable:
 
         return None
 
+    def assign_grid_cell(self, x_0, y_0):
+
+        # Find interval
+        i = bisect(self.grid_x, x_0) - 1
+        j = bisect(self.grid_y, y_0) - 1
+
+        return Cell(i=i, j=j)
+
 
 class BilliardBall:
     def __init__(self, table, radius, color, reward):
@@ -401,8 +458,12 @@ class BilliardBall:
     def velocity_y(self, value):
         self._next_velocity_y = value
 
+    @staticmethod
+    def _is_moving(velocity_x, velocity_y):
+        return velocity_x**2 + velocity_y**2 > MIN_VELOCITY_SQ
+
     def is_moving(self):
-        return self.velocity_x**2 + self.velocity_y**2 > MIN_VELOCITY_SQ
+        return BilliardBall._is_moving(velocity_x=self.velocity_x, velocity_y=self.velocity_y)
 
     def exert_force(self, vx, vy):
         self._velocity_x = self._next_velocity_x = vx
@@ -438,34 +499,50 @@ class BilliardBall:
         self._next_velocity_x = self._velocity_x
         self._next_velocity_y = self._velocity_y
 
-    def get_new_ball_direction(self, other_ball):
-
-        l_x = self.center_x - other_ball.center_x
-        l_y = self.center_y - other_ball.center_y
+    @staticmethod
+    def _get_new_ball_direction(center_x, center_y,
+                                other_center_x, other_center_y,
+                                velocity_x, velocity_y,
+                                other_velocity_x, other_velocity_y):
+        l_x = center_x - other_center_x
+        l_y = center_y - other_center_y
         l_norm = math.sqrt(l_x * l_x + l_y * l_y)
         l_x /= l_norm
         l_y /= l_norm
 
-        proj_1 = self.velocity_x * l_x + self.velocity_y * l_y
+        proj_1 = velocity_x * l_x + velocity_y * l_y
         v1_normal_x = proj_1 * l_x
         v1_normal_y = proj_1 * l_y
 
-        proj_2 = other_ball.velocity_x * l_x + other_ball.velocity_y * l_y
+        proj_2 = other_velocity_x * l_x + other_velocity_y * l_y
         v2_normal_x = proj_2 * l_x
         v2_normal_y = proj_2 * l_y
 
-        v_1_tangential_x = self.velocity_x - v1_normal_x
-        v_1_tangential_y = self.velocity_y - v1_normal_y
+        v_1_tangential_x = velocity_x - v1_normal_x
+        v_1_tangential_y = velocity_y - v1_normal_y
 
         return v_1_tangential_x + v2_normal_x, v_1_tangential_y + v2_normal_y
 
-    def is_colliding_with_ball(self, other_ball):
+    def get_new_ball_direction(self, other_ball):
+        return BilliardBall._get_new_ball_direction(center_x=self.center_x, center_y=self.center_y,
+                                                    other_center_x=other_ball.center_x, other_center_y=other_ball.center_y,
+                                                    velocity_x=self.velocity_x, velocity_y=self.velocity_y,
+                                                    other_velocity_x=other_ball.velocity_x, other_velocity_y=other_ball.velocity_y)
 
-        d_x = self.center_x - other_ball.center_x
-        d_y = self.center_y - other_ball.center_y
+    @staticmethod
+    def _is_colliding_with_ball(center_x, center_y,
+                                other_center_x, other_center_y,
+                                four_times_radius_sq):
+        d_x = center_x - other_center_x
+        d_y = center_y - other_center_y
         d_2 = d_x * d_x + d_y * d_y
 
-        return d_2 <= self.four_times_radius_sq
+        return d_2 <= four_times_radius_sq
+
+    def is_colliding_with_ball(self, other_ball):
+        return BilliardBall._is_colliding_with_ball(center_x=self.center_x, center_y=self.center_y,
+                                                    other_center_x=other_ball.center_x, other_center_y=other_ball.center_y,
+                                                    four_times_radius_sq=self.four_times_radius_sq)
 
     def is_in_neighborhood(self, other_ball):
         horizontally = abs(self.grid_cell.i - other_ball.grid_cell.i) <= 1
@@ -474,7 +551,7 @@ class BilliardBall:
         return horizontally and vertically
 
     def reset(self):
-        self.__init__(radius=self.radius, color=self.color, reward=self.reward)
+        self.__init__(radius=self.radius, color=self.color, reward=self.reward, table=self.table)
 
 
 class BilliardGame(arcade.Window):
@@ -494,6 +571,9 @@ class BilliardGame(arcade.Window):
         set_window(self)
         set_viewport(0, self.width, 0, self.height)
 
+        # Background color
+        arcade.set_background_color(AIR_FORCE_BLUE)
+
         # Copy
         self.pocket_width = pocket_width
         self.pocket_radius = pocket_width / (2 * (math.sqrt(2) - 1))
@@ -503,8 +583,12 @@ class BilliardGame(arcade.Window):
         self.num_balls = num_balls
         self.ball_radius = ball_radius
 
+        # Table definition
+        self.table = PoolTable(screen_width=screen_width, screen_height=screen_height,
+                               pocket_width=pocket_width, pocket_radius=self.pocket_radius)
+
         # Scene construction
-        self.balls = [BilliardBall(table=self, radius=ball_radius, color=WHITE_SMOKE, reward=None)]
+        self.balls = [BilliardBall(table=self.table, radius=ball_radius, color=WHITE_SMOKE, reward=None)]
 
         # Linearly interpolate colors
         start_color = np.array(RED)
@@ -518,18 +602,10 @@ class BilliardGame(arcade.Window):
             self.rewards = 2 * self.rewards - 1
 
         for k in range(num_balls - 1):
-            self.balls.append(BilliardBall(table=self,
+            self.balls.append(BilliardBall(table=self.table,
                                            radius=ball_radius,
                                            color=color[k].astype(np.int32),
                                            reward=self.rewards[k]))
-
-        self.table = PoolTable(screen_width=screen_width, screen_height=screen_height,
-                               pocket_width=pocket_width, pocket_radius=self.pocket_radius)
-
-        # Defintion of grid (used to make collision detection efficient)
-        grid_step = 3 * ball_radius
-        self.grid_x = np.arange(start=0, stop=self.width, step=grid_step)
-        self.grid_y = np.arange(start=0, stop=self.height, step=grid_step)
 
         # Assign ball positions
         self.assign_initial_ball_positions()
@@ -538,14 +614,6 @@ class BilliardGame(arcade.Window):
         self.step_counter = 0
         self.max_steps = (self.num_balls - 1) // 2
         self.done = False
-
-    def assign_grid_cell(self, x_0, y_0):
-
-        # Find interval
-        i = bisect(self.grid_x, x_0) - 1
-        j = bisect(self.grid_y, y_0) - 1
-
-        return Cell(i=i, j=j)
 
     def assign_initial_ball_positions(self):
 
@@ -572,7 +640,7 @@ class BilliardGame(arcade.Window):
                 if not is_collision:
 
                     # Assign initiali grid cell
-                    ball.grid_cell = self.assign_grid_cell(x_0=proposal_x, y_0=proposal_y)
+                    ball.grid_cell = self.table.assign_grid_cell(x_0=proposal_x, y_0=proposal_y)
                     break
 
     def on_draw(self):
@@ -630,6 +698,9 @@ class BilliardGame(arcade.Window):
 
         # Update until movement stops or cue balls is pocketed
         delta_time = 1/self.fps
+
+        start = process_time_ns()
+        num_frames = 0
         while True:
             self.update(delta_time)
 
@@ -641,6 +712,10 @@ class BilliardGame(arcade.Window):
             # No balls are moving
             if all(not ball.is_moving() for ball in self.balls):
                 break
+
+            num_frames += 1
+        duration = (process_time_ns() - start)/(10**9)
+        print("{} [frames/sec]".format(num_frames/duration))
 
         # Count number of balls on the table after performing the shot
         balls_on_table_after = {ball for ball in self.balls[1:] if ball.is_on_table}
@@ -683,6 +758,7 @@ class BilliardGame(arcade.Window):
                 ball.velocity_x = ball.velocity_y = 0
                 continue
 
+            # start = process_time_ns()
             # Check if a cushion-collision has occured
             colliding_cushion = self.table.get_colliding_cushion(ball)
             if colliding_cushion is not None and colliding_cushion is not ball.last_cushion:
@@ -692,8 +768,10 @@ class BilliardGame(arcade.Window):
                 ball.velocity_y = velocity_y
                 ball.last_cushion = colliding_cushion
                 ball.last_ball = None
+            # print("Took {} [msec] s2".format((process_time_ns() - start)/(10**6)))
 
             # Check if a ball-ball collision has occured
+            # start = process_time_ns()
             for other_ball in self.balls:
                 if ball is other_ball or not ball.is_in_neighborhood(other_ball):
                     continue
@@ -705,6 +783,7 @@ class BilliardGame(arcade.Window):
                     ball.last_ball = other_ball
                     ball.last_cushion = None
                     break
+            # print("Took {} [msec] s3".format((process_time_ns() - start)/(10**6)))
 
         # Update ball position
         for ball in self.balls:
@@ -720,9 +799,6 @@ def interactive(screen_width, screen_height, fps, pocket_width, num_balls, ball_
                         pocket_width=pocket_width,
                         num_balls=num_balls,
                         ball_radius=ball_radius)
-
-    # Background color
-    arcade.set_background_color(AIR_FORCE_BLUE)
 
     # Make visible
     game.set_visible(True)

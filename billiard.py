@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from collections import namedtuple
 import math
 from bisect import bisect
-import numba
+from time import process_time_ns
 
 # Named tuples
 Step = namedtuple("Step", ["reward", "new_observation", "done"])
@@ -197,7 +197,7 @@ class RectangularPocket(Pocket):
                                      color=self.color)
 
     def __contains__(self, ball):
-        w_half = self.height/2
+        w_half = self.width/2
         h_half = self.height/2
         horizontally = self.xa - w_half <= ball.center_x <= self.xa + w_half
         vertically = self.ya - h_half <= ball.center_y <= self.ya + h_half
@@ -635,6 +635,8 @@ class BilliardGame(arcade.Window):
 
         # Update until movement stops or cue balls is pocketed
         delta_time = 1/self.fps
+        num_frames = 0
+        start = process_time_ns()
         while True:
             self.update(delta_time)
 
@@ -647,6 +649,10 @@ class BilliardGame(arcade.Window):
             if all(not ball.is_moving() for ball in self.balls):
                 break
 
+            num_frames += 1
+
+        duration = (process_time_ns() - start)/(10**9)
+        print("{} [frames/sec]".format(num_frames/duration))
         # Count number of balls on the table after performing the shot
         balls_on_table_after = {ball for ball in self.balls[1:] if ball.is_on_table}
 
