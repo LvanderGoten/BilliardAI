@@ -201,11 +201,10 @@ class TriangularPocket(Pocket):
         self.xc, self.yc = xc, yc
 
     def on_draw(self):
-        pass
-        # arcade.draw_triangle_filled(x1=self.xa, y1=self.ya,
-        #                             x2=self.xb, y2=self.yb,
-        #                             x3=self.xc, y3=self.yc,
-        #                             color=self.color)
+        arcade.draw_triangle_filled(x1=self.xa, y1=self.ya,
+                                    x2=self.xb, y2=self.yb,
+                                    x3=self.xc, y3=self.yc,
+                                    color=self.color)
 
     @staticmethod
     def _contains_ball(float xa, float ya,
@@ -714,9 +713,6 @@ class BilliardGame(arcade.Window):
 
         # Update until movement stops or cue balls is pocketed
         delta_time = 1/self.fps
-
-        start = process_time_ns()
-        num_frames = 0
         while True:
             self.update(delta_time)
 
@@ -729,9 +725,6 @@ class BilliardGame(arcade.Window):
             if all(not ball.is_moving() for ball in self.balls):
                 break
 
-            num_frames += 1
-        duration = (process_time_ns() - start)/(10**9)
-        print("{} [frames/sec]".format(num_frames/duration))
 
         # Count number of balls on the table after performing the shot
         balls_on_table_after = {ball for ball in self.balls[1:] if ball.is_on_table}
