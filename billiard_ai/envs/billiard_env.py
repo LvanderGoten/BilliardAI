@@ -12,6 +12,7 @@ FPS = 60
 V_MAX = 500
 
 
+# TODO: Action assertions
 class BilliardEnv(gym.Env):
     metadata = {
         'render.modes': ['human', 'rgb_array'],
@@ -38,8 +39,8 @@ class BilliardEnv(gym.Env):
     def step(self, action):
         assert self.is_initialized, "Env. initialization required!"
         assert not self.game.done, "Reset required"
-        _step = self.game.step(phi_deg=action["phi_deg"],
-                               velocity_magnitude=action["velocity_magnitude"])
+        _step = self.game.step(phi_deg=action[0],
+                               velocity_magnitude=action[1])
         return _step.new_observation, _step.reward, _step.done, {}
 
     def reset(self):
@@ -48,5 +49,6 @@ class BilliardEnv(gym.Env):
         return _step.new_observation, _step.reward, _step.done, {}
 
     def render(self, mode='human'):
+        # TODO: Implement
         pass
 

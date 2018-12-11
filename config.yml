@@ -1,0 +1,27 @@
+---
+actor:
+  cnn_activations: ["torch.nn.ELU", "torch.nn.ELU", "torch.nn.Tanh"]
+  cnn_kernel_sizes: [[16, 12], [16, 12], [16, 12]]
+  cnn_strides: [[4, 3], [4, 3], [4, 3]]
+  cnn_num_channels: [6, 8]  # first channel is implicity equal to 3, last channel implicitly equal to 2
+  fc_num_layers: 1    # number of intermediate layers
+  fc_activations: ["torch.nn.ELU"]
+  fc_num_units: [50]
+critic:
+  state_cnn_activations: ["torch.nn.ELU", "torch.nn.ELU", "torch.nn.Tanh"]
+  state_cnn_kernel_sizes: [[16, 12], [16, 12], [16, 12]]
+  state_cnn_strides: [[4, 3], [4, 3], [4, 3]]
+  state_cnn_num_channels: [4, 8, 16]  # first channel is implicitly equal to 3
+  fc_num_layers: 1    # number of intermediate layers
+  fc_activations: ["torch.nn.ELU"]  # last activation is implicitly linear
+  fc_num_units: [50]
+learning_rate: 0.01
+batch_size: 8
+replay_buffer_size: 1000
+update_networks_every_n_steps: 200
+update_networks_for_n_steps: 20
+gamma: 0.9
+
+# Noise levels
+noise_std_angle: .1
+noise_std_velocity: 10.0

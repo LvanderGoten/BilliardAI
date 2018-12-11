@@ -3,3 +3,6 @@ numpy>=1.15.3
 scikit-image>=0.14.1
 matplotlib>=3.0.1
 gym>=0.10.9
+torch>=1.0.0
+tensorboardX>=1.4
+pyyaml>=3.13

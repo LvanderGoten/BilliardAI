@@ -677,6 +677,7 @@ class BilliardGame(arcade.Window):
             self.dispatch_event('on_draw')
             self.flip()
             img = np.array(arcade.draw_commands.get_image())[:, :, :3]    # [H, W, 3]
+        img = np.transpose(img, axes=[2, 0, 1])     # [3, H, W]
         return img.astype(np.float32)/(2**8 - 1)
 
     def reset(self):
@@ -740,7 +741,7 @@ class BilliardGame(arcade.Window):
         if self.step_counter == self.max_steps:
             self.done = True
             return Step(reward=reward,
-                        new_observation=None,
+                        new_observation=np.zeros(shape=[3, self.height, self.width], dtype=np.float32),
                         done=True)
 
         # Take screenshot
@@ -799,21 +800,3 @@ class BilliardGame(arcade.Window):
             ball.update(actual_delta_time)
 
 
-def interactive(screen_width, screen_height, fps, pocket_width, num_balls, ball_radius):
-
-    # Game instance
-    game = BilliardGame(screen_width=screen_width,
-                        screen_height=screen_height,
-                        fps=fps,
-                        pocket_width=pocket_width,
-                        num_balls=num_balls,
-                        ball_radius=ball_radius)
-
-    # Make visible
-    game.set_visible(True)
-
-    # Apply force on cue ball
-    game.balls[0].exert_force(vx=250, vy=250)
-
-    # Render loop
-    arcade.run()
